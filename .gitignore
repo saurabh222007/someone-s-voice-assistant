@@ -1,0 +1,14 @@
+node_modules/
+.env
+dist/
+build/
+.DS_Store
+*.local
+__pycache__/
+venv/
+.venv/
+.vscode/
+.gemini/
+brain/
+artifacts/
+temp/
