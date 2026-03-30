@@ -199,7 +199,7 @@ function checkMath(text: string): string | null {
   return null;
 }
 
-const API_BASES = ['http://127.0.0.1:5000', 'http://localhost:5000'];
+const API_BASES = ['https://someone-s-voice-assistant.onrender.com', 'http://127.0.0.1:5000', 'http://localhost:5000'];
 
 export function getStoredApiKey(): string | null {
   return localStorage.getItem('gemini_api_key');
