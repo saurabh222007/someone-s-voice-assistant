@@ -10,6 +10,7 @@ import edge_tts
 import yt_dlp
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
+
 from dotenv import load_dotenv
 
 # Load configuration from .env in the parent directory
@@ -287,6 +288,97 @@ def search_music():
         return jsonify({"error": "Music search service unavailable"}), 500
 
 
+# ==================== Music Stream ====================
+
+@app.route("/api/music/stream", methods=["GET"])
+def stream_music():
+    """Return a direct audio URL for a given YouTube video ID."""
+    video_id = request.args.get("id", "").strip()
+    if not video_id:
+        return jsonify({"error": "No video ID provided"}), 400
+
+    # Layer 1: yt-dlp extraction (most reliable for quality)
+    try:
+        ydl_opts = {
+            "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+            "quiet": True,
+            "no_warnings": True,
+            "nocheckcertificate": True,
+            "geo_bypass": True,
+            "skip_download": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            if info:
+                # Get the best audio URL
+                audio_url = info.get("url")
+                if not audio_url:
+                    # Try formats list
+                    formats = info.get("formats", [])
+                    audio_formats = [f for f in formats if f.get("acodec") != "none" and f.get("vcodec") in ("none", None)]
+                    if not audio_formats:
+                        audio_formats = [f for f in formats if f.get("acodec") != "none"]
+                    if audio_formats:
+                        # Pick best audio by bitrate
+                        audio_formats.sort(key=lambda f: f.get("abr", 0) or 0, reverse=True)
+                        audio_url = audio_formats[0].get("url")
+
+                if audio_url:
+                    return jsonify({"audioUrl": audio_url, "source": "yt-dlp"})
+    except Exception as e:
+        print(f"[WARN] yt-dlp stream extraction failed: {e}", file=sys.stderr)
+
+    # Layer 2: Piped API instances (free, no rate limits usually)
+    piped_instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.adminforge.de",
+        "https://api.piped.victr.me",
+        "https://pipedapi.in.projectsegfau.lt",
+    ]
+    for instance in piped_instances:
+        try:
+            r = requests.get(f"{instance}/streams/{video_id}", timeout=8)
+            if r.status_code == 200:
+                data = r.json()
+                audio_streams = data.get("audioStreams", [])
+                if audio_streams:
+                    # Sort by bitrate, prefer m4a/mp4 for browser compatibility
+                    m4a = [s for s in audio_streams if "m4a" in s.get("mimeType", "") or "mp4" in s.get("mimeType", "")]
+                    if m4a:
+                        m4a.sort(key=lambda s: s.get("bitrate", 0), reverse=True)
+                        return jsonify({"audioUrl": m4a[0]["url"], "source": "piped"})
+                    # Fallback to any audio stream
+                    audio_streams.sort(key=lambda s: s.get("bitrate", 0), reverse=True)
+                    return jsonify({"audioUrl": audio_streams[0]["url"], "source": "piped"})
+        except Exception as e:
+            print(f"[WARN] Piped instance {instance} failed: {e}", file=sys.stderr)
+            continue
+
+    # Layer 3: Invidious API instances
+    invidious_instances = [
+        "https://inv.nadeko.net",
+        "https://invidious.fdn.fr",
+        "https://invidious.privacyredirect.com",
+    ]
+    for instance in invidious_instances:
+        try:
+            r = requests.get(f"{instance}/api/v1/videos/{video_id}", timeout=8)
+            if r.status_code == 200:
+                data = r.json()
+                adaptive = data.get("adaptiveFormats", [])
+                audio_only = [f for f in adaptive if f.get("type", "").startswith("audio/")]
+                if audio_only:
+                    # Prefer m4a
+                    m4a = [f for f in audio_only if "mp4a" in f.get("type", "")]
+                    chosen = m4a[0] if m4a else audio_only[0]
+                    return jsonify({"audioUrl": chosen["url"], "source": "invidious"})
+        except Exception as e:
+            print(f"[WARN] Invidious instance {instance} failed: {e}", file=sys.stderr)
+            continue
+
+    return jsonify({"error": "Could not extract audio stream. Try opening on YouTube directly."}), 503
+
+
 # ==================== Health & System ====================
 
 @app.route("/api/news", methods=["GET"])
@@ -304,7 +396,7 @@ def news():
 
         root = ET.fromstring(r.content)
         items = []
-        for item in root.findall(".//item")[:8]:
+        for item in list(root.findall(".//item"))[:8]:
             title = item.findtext("title", "").strip()
             link = item.findtext("link", "").strip()
             if title and link:
@@ -320,5 +412,6 @@ def health():
     return jsonify({"status": "active", "version": "1.1.0"})
 
 if __name__ == "__main__":
-    # Ensure port 5000 is used
-    app.run(host="0.0.0.0", port=5000)
+    # Use PORT from environment variable (like Render/Heroku) or fallback to 5000
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

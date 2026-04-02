@@ -199,7 +199,11 @@ function checkMath(text: string): string | null {
   return null;
 }
 
-const API_BASES = ['https://someone-s-voice-assistant.onrender.com', 'http://127.0.0.1:5000', 'http://localhost:5000'];
+const API_BASES = [
+  import.meta.env.VITE_BACKEND_URL || 'https://someone-s-voice-assistant.onrender.com',
+  'http://127.0.0.1:5000',
+  'http://localhost:5000'
+];
 
 export function getStoredApiKey(): string | null {
   return localStorage.getItem('gemini_api_key');
@@ -232,7 +236,7 @@ async function fetchFromBackend(path: string, init?: RequestInit): Promise<Respo
 
 export async function checkBackendHealth(): Promise<boolean> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 2500);
+  const timeout = window.setTimeout(() => controller.abort(), 30000);
   try {
     const res = await fetchFromBackend('/api/health', { method: 'GET', signal: controller.signal });
     return res.ok;
@@ -354,6 +358,24 @@ export async function searchMusic(query: string): Promise<MusicResult> {
   }
 
   return { title: query, videoId: '', uploaderName: '', duration: 0, thumbnail: '', youtubeUrl: `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}` };
+}
+
+export async function getAudioStreamUrl(videoId: string): Promise<string | null> {
+  if (!videoId) return null;
+  try {
+    const res = await fetchFromBackend(`/api/music/stream?id=${encodeURIComponent(videoId)}`, {
+      method: 'GET',
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.audioUrl) {
+        return data.audioUrl;
+      }
+    }
+  } catch (err) {
+    console.error('Audio stream fetch failed:', err);
+  }
+  return null;
 }
 
 // ==================== SPEECH ====================

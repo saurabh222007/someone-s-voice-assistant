@@ -6,6 +6,7 @@ import {
   getNews, 
   askAI, 
   searchMusic, 
+  getAudioStreamUrl,
   checkBackendHealth,
   speak,
   getStoredApiKey,
@@ -270,7 +271,7 @@ export default function App() {
         const title = musicData.title || query;
         setResponse({ type: 'music', title, content: `Playing ${title}`, data: musicData });
         setMode('responding');
-        // Do not speak or call continueConversation here — that would clear the overlay and destroy the iframe.
+        // Do not speak or call continueConversation here — that would clear the overlay and destroy the player.
         Sounds.success();
         afterMusicKeepPlaying();
         return;
@@ -699,51 +700,7 @@ function ResponseCard({ response, onClose }: { response: ResponseData, onClose: 
       )}
 
       {response.type === 'music' && response.data && (
-        <div className="mt-2 space-y-4 w-full">
-          <div className="p-6 sm:p-10 rounded-3xl bg-white/5 border border-white/5 flex flex-col items-center text-center gap-8 relative overflow-hidden group/music">
-            {/* Animated Vinyl Record */}
-            <div className="relative w-48 h-48 sm:w-56 sm:h-56">
-               <div className="absolute inset-0 rounded-full bg-black shadow-2xl animate-[spin_3s_linear_infinite]" style={{ background: 'radial-gradient(circle, #222 0%, #111 40%, #000 50%, #111 60%, #222 70%, #000 100%)' }}>
-                 <div className="absolute inset-0 rounded-full border border-white/5 opacity-50" style={{ background: 'repeating-radial-gradient(circle, transparent 0, transparent 2px, rgba(255,255,255,0.03) 3px)' }} />
-               </div>
-               <div className="absolute inset-[32%] rounded-full overflow-hidden border-4 border-black/50 shadow-inner z-10">
-                 <img 
-                   src={response.data.thumbnail || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400&h=400&fit=crop'} 
-                   alt={response.data.title}
-                   className="w-full h-full object-cover animate-pulse"
-                 />
-               </div>
-               <div className="absolute top-1/2 left-1/2 w-4 h-4 bg-white/10 rounded-full -translate-x-1/2 -translate-y-1/2 z-20 border border-white/20" />
-            </div>
-
-            <div className="flex-1 min-w-0 z-10">
-               <div className="text-2xl font-light text-white mb-2 line-clamp-1">{response.data.title}</div>
-               <div className="text-xs text-indigo-400 tracking-[0.3em] uppercase font-medium">{response.data.uploaderName}</div>
-            </div>
-
-            {/* Hidden Player for Audio */}
-            {response.data.videoId && (
-              <div className="absolute opacity-0 pointer-events-none">
-                <iframe
-                  width="1"
-                  height="1"
-                  src={`https://www.youtube.com/embed/${response.data.videoId}?autoplay=1&mute=0`}
-                  title="YouTube video player"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                />
-              </div>
-            )}
-
-            <div className="flex items-center gap-4 z-10">
-              <a href={response.data.youtubeUrl} target="_blank" rel="noreferrer" className="glass-pill hover:bg-white/10 transition-all flex items-center gap-2 text-[10px] uppercase tracking-widest">
-                 Watch on YouTube <ExternalLink size={10} />
-              </a>
-            </div>
-
-            {/* Background Glow */}
-            <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-indigo-500/10 blur-[100px] rounded-full" />
-          </div>
-        </div>
+        <MusicPlayer data={response.data} />
       )}
 
       <button 
@@ -752,6 +709,227 @@ function ResponseCard({ response, onClose }: { response: ResponseData, onClose: 
       >
         Dismiss Interface <History size={12} />
       </button>
+    </div>
+  );
+}
+
+// ==================== MUSIC PLAYER ====================
+function MusicPlayer({ data }: { data: any }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTimeLocal] = useState(0);
+
+  // Fetch audio stream URL on mount
+  useEffect(() => {
+    let cancelled = false;
+    const fetchStream = async () => {
+      if (!data.videoId) {
+        setError('No video found. Open YouTube to listen.');
+        setIsLoading(false);
+        return;
+      }
+      setIsLoading(true);
+      setError(null);
+      try {
+        const url = await getAudioStreamUrl(data.videoId);
+        if (cancelled) return;
+        if (url) {
+          setAudioUrl(url);
+        } else {
+          setError('Could not fetch audio stream. Try YouTube.');
+        }
+      } catch {
+        if (!cancelled) setError('Audio stream unavailable.');
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+    fetchStream();
+    return () => { cancelled = true; };
+  }, [data.videoId]);
+
+  // Auto-play when audio URL is ready
+  useEffect(() => {
+    if (!audioUrl || !audioRef.current) return;
+    audioRef.current.src = audioUrl;
+    audioRef.current.load();
+    audioRef.current.play()
+      .then(() => setIsPlaying(true))
+      .catch(() => {
+        // Autoplay blocked — user needs to click play
+        setIsPlaying(false);
+      });
+  }, [audioUrl]);
+
+  // Update progress
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const onTimeUpdate = () => {
+      setCurrentTimeLocal(audio.currentTime);
+      if (audio.duration && isFinite(audio.duration)) {
+        setProgress((audio.currentTime / audio.duration) * 100);
+      }
+    };
+    const onLoadedMetadata = () => {
+      if (audio.duration && isFinite(audio.duration)) {
+        setDuration(audio.duration);
+      }
+    };
+    const onEnded = () => setIsPlaying(false);
+    const onError = () => {
+      setError('Playback failed. Try YouTube link.');
+      setIsPlaying(false);
+    };
+
+    audio.addEventListener('timeupdate', onTimeUpdate);
+    audio.addEventListener('loadedmetadata', onLoadedMetadata);
+    audio.addEventListener('ended', onEnded);
+    audio.addEventListener('error', onError);
+
+    return () => {
+      audio.removeEventListener('timeupdate', onTimeUpdate);
+      audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+      audio.removeEventListener('ended', onEnded);
+      audio.removeEventListener('error', onError);
+    };
+  }, [audioUrl]);
+
+  // Cleanup audio on unmount
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      }
+    };
+  }, []);
+
+  const togglePlay = () => {
+    if (!audioRef.current || !audioUrl) return;
+    if (isPlaying) {
+      audioRef.current.pause();
+      setIsPlaying(false);
+    } else {
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+    }
+  };
+
+  const seekTo = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!audioRef.current || !duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    audioRef.current.currentTime = fraction * duration;
+  };
+
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const vinylSpinClass = isPlaying ? 'animate-[spin_3s_linear_infinite]' : '';
+
+  return (
+    <div className="mt-2 space-y-4 w-full">
+      <div className="p-6 sm:p-10 rounded-3xl bg-white/5 border border-white/5 flex flex-col items-center text-center gap-6 relative overflow-hidden">
+        {/* Animated Vinyl Record */}
+        <div className="relative w-44 h-44 sm:w-52 sm:h-52">
+          <div className={`absolute inset-0 rounded-full bg-black shadow-2xl ${vinylSpinClass}`} style={{ background: 'radial-gradient(circle, #222 0%, #111 40%, #000 50%, #111 60%, #222 70%, #000 100%)' }}>
+            <div className="absolute inset-0 rounded-full border border-white/5 opacity-50" style={{ background: 'repeating-radial-gradient(circle, transparent 0, transparent 2px, rgba(255,255,255,0.03) 3px)' }} />
+          </div>
+          <div className="absolute inset-[32%] rounded-full overflow-hidden border-4 border-black/50 shadow-inner z-10">
+            <img 
+              src={data.thumbnail || 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400&h=400&fit=crop'} 
+              alt={data.title}
+              className="w-full h-full object-cover"
+            />
+          </div>
+          <div className="absolute top-1/2 left-1/2 w-4 h-4 bg-white/10 rounded-full -translate-x-1/2 -translate-y-1/2 z-20 border border-white/20" />
+        </div>
+
+        {/* Track Info */}
+        <div className="flex-1 min-w-0 z-10">
+          <div className="text-xl sm:text-2xl font-light text-white mb-1 line-clamp-1">{data.title}</div>
+          <div className="text-xs text-indigo-400 tracking-[0.3em] uppercase font-medium">{data.uploaderName}</div>
+        </div>
+
+        {/* Hidden Audio Element */}
+        <audio ref={audioRef} crossOrigin="anonymous" preload="auto" />
+
+        {/* Playback Controls */}
+        <div className="w-full flex flex-col gap-3 z-10">
+          {/* Loading State */}
+          {isLoading && (
+            <div className="flex items-center justify-center gap-3 py-3">
+              <div className="w-5 h-5 border-t-2 border-indigo-400 rounded-full animate-spin" />
+              <span className="text-xs text-white/40 uppercase tracking-widest">Fetching audio stream...</span>
+            </div>
+          )}
+
+          {/* Error State */}
+          {error && !isLoading && (
+            <div className="text-xs text-rose-300/70 py-2 px-4 rounded-xl bg-rose-500/10 border border-rose-500/20">
+              {error}
+            </div>
+          )}
+
+          {/* Player Controls (shown when audio URL is available) */}
+          {audioUrl && !isLoading && (
+            <>
+              {/* Progress Bar */}
+              <div 
+                className="w-full h-1.5 bg-white/10 rounded-full cursor-pointer group/progress relative"
+                onClick={seekTo}
+              >
+                <div 
+                  className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-150 relative"
+                  style={{ width: `${progress}%` }}
+                >
+                  <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg opacity-0 group-hover/progress:opacity-100 transition-opacity" />
+                </div>
+              </div>
+
+              {/* Time + Controls Row */}
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-white/30 tabular-nums">{formatTime(currentTime)}</span>
+                
+                <button
+                  onClick={togglePlay}
+                  className="w-12 h-12 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:bg-white/20 hover:scale-105 transition-all active:scale-95"
+                >
+                  {isPlaying ? (
+                    <div className="flex gap-1">
+                      <div className="w-1 h-4 bg-white rounded-sm" />
+                      <div className="w-1 h-4 bg-white rounded-sm" />
+                    </div>
+                  ) : (
+                    <div className="w-0 h-0 border-t-[7px] border-t-transparent border-b-[7px] border-b-transparent border-l-[12px] border-l-white ml-1" />
+                  )}
+                </button>
+
+                <span className="text-[10px] text-white/30 tabular-nums">{duration ? formatTime(duration) : '--:--'}</span>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* YouTube Link */}
+        <div className="flex items-center gap-4 z-10">
+          <a href={data.youtubeUrl} target="_blank" rel="noreferrer" className="glass-pill hover:bg-white/10 transition-all flex items-center gap-2 text-[10px] uppercase tracking-widest">
+            Watch on YouTube <ExternalLink size={10} />
+          </a>
+        </div>
+
+        {/* Background Glow */}
+        <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-indigo-500/10 blur-[100px] rounded-full" />
+      </div>
     </div>
   );
 }
